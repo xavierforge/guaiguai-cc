@@ -1,9 +1,10 @@
 [package]
-name = "baiclaude"
+name = "guaiguai-claude"
 version = "0.1.0"
 edition = "2021"
-description = "拜 Claude — 三炷香催 Claude Code 加速"
+description = "乖乖Claude — 三炷香催 Claude Code 加速"
 license = "MIT"
+repository = "https://github.com/YOUR_USERNAME/guaiguai-claude"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

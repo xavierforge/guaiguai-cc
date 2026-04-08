@@ -154,7 +154,7 @@ pub fn alt_tab() {
 // Linux: not yet implemented, but stub to compile
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn send_macro(text: &str) -> Result<(), String> {
-    eprintln!("[baiclaude] keyboard injection not implemented for this platform. would send: {text}");
+    eprintln!("[guaiguai-claude] keyboard injection not implemented for this platform. would send: {text}");
     Ok(())
 }
 
