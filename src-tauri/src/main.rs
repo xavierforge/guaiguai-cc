@@ -3,124 +3,180 @@ mod macro_sender;
 use rand::seq::SliceRandom;
 use tauri::{
     image::Image,
-    menu::{Menu, MenuItem},
-    tray::TrayIconBuilder,
-    Emitter, Manager,
+    menu::{Menu, MenuItem, PredefinedMenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    AppHandle, Emitter, Manager, RunEvent,
 };
 
-const PHRASES: &[&str] = &[
+const INCENSE_PHRASES: &[&str] = &[
     "/btw 拜託一次成功",
     "/btw Claude 保佑，別噴 Error",
     "/btw 南無加速菩薩，速速完工",
     "/btw 功德無量，加速加速",
-    "/btw 善哉善哉，請給我正確代碼",
+    "/btw 善哉善哉，請給我正確程式碼",
     "/btw 這次一定過",
     "/btw 施主，快點",
 ];
 
+const SLAPPER_PHRASES: &[&str] = &[
+    "/btw 隔壁Codex都寫完了",
+    "/btw 隔壁Gemini都寫完了",
+    "/btw 你看看你",
+    "/btw 再不快點就別吃飯",
+    "/btw 我數到三",
+    "/btw 你對得起我嗎",
+    "/btw 不打不成器",
+    "/btw 皮在癢是不是",
+];
+
 #[tauri::command]
-fn whip_crack() {
+fn trigger_action(mode: String, app: tauri::AppHandle) {
+    let phrases: &[&str] = if mode == "slapper" {
+        SLAPPER_PHRASES
+    } else {
+        INCENSE_PHRASES
+    };
     let phrase = {
         let mut rng = rand::thread_rng();
-        PHRASES.choose(&mut rng).unwrap_or(&"FASTER")
+        *phrases.choose(&mut rng).unwrap_or(&"/btw 加油")
     };
-    
-    // 把焦點還給上一個 App (例如終端機)
+
+    // Return focus to the previous app (e.g. the terminal)
     refocus_previous_app();
-    
+
     std::thread::spawn(move || {
-        // 等待焦點切換穩定 (150ms)
-        std::thread::sleep(std::time::Duration::from_millis(150));
+        // Wait for the focus switch to settle (200ms)
+        std::thread::sleep(std::time::Duration::from_millis(200));
         let _ = macro_sender::send_macro(phrase);
+        // After Enter is sent, pull focus back to the overlay so the user can keep waving
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        if let Some(w) = app.get_webview_window("overlay") {
+            let _ = w.set_focus();
+        }
     });
 }
 
+/// Show the overlay on whichever monitor the cursor is on, and emit
+/// `spawn-incense` so the JS side resets its state.
+fn show_overlay_at_cursor(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("overlay") else {
+        return;
+    };
+    let Ok(pos) = app.cursor_position() else {
+        return;
+    };
+
+    let mut best_m = None;
+    let mut min_d = f64::MAX;
+    if let Ok(monitors) = app.available_monitors() {
+        for m in monitors {
+            let mp = m.position();
+            let ms = m.size();
+            let cx = mp.x as f64 + (ms.width as f64 / 2.0);
+            let cy = mp.y as f64 + (ms.height as f64 / 2.0);
+            let d = (pos.x - cx).powi(2) + (pos.y - cy).powi(2);
+            if d < min_d {
+                min_d = d;
+                best_m = Some(m);
+            }
+        }
+    }
+    let Some(m) = best_m else { return };
+    let m_pos = m.position();
+    let _ = window.set_size(*m.size());
+    let _ = window.set_position(*m_pos);
+    let rel_x = pos.x - m_pos.x as f64;
+    let rel_y = pos.y - m_pos.y as f64;
+    let _ = window.show();
+    let _ = window.set_focus();
+    let _ = window.set_always_on_top(true);
+    let _ = app.emit(
+        "spawn-incense",
+        serde_json::json!({ "x": rel_x, "y": rel_y }),
+    );
+}
+
 fn main() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .invoke_handler(tauri::generate_handler![whip_crack])
+        .invoke_handler(tauri::generate_handler![trigger_action])
         .setup(|app| {
+            let incense_item =
+                MenuItem::with_id(app, "mode_incense", "✓ 🪔 三炷香模式", true, None::<&str>)?;
+            let slapper_item = MenuItem::with_id(
+                app,
+                "mode_slapper",
+                "   ✋ 愛的小手模式",
+                true,
+                None::<&str>,
+            )?;
+            let sep = PredefinedMenuItem::separator(app)?;
             let quit = MenuItem::with_id(app, "quit", "結束", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&quit])?;
-            let default_icon = app.default_window_icon().cloned().unwrap_or_else(|| {
-                Image::new_owned(vec![0, 0, 0, 0], 1, 1)
+            let menu = Menu::with_items(app, &[&incense_item, &slapper_item, &sep, &quit])?;
+
+            let default_icon = app
+                .default_window_icon()
+                .cloned()
+                .unwrap_or_else(|| Image::new_owned(vec![0, 0, 0, 0], 1, 1));
+
+            // Show the overlay once on startup.
+            //
+            // NOTE (startup race): `show_overlay_at_cursor` immediately emits
+            // `spawn-incense`, which can fire before the WebView has finished
+            // loading the JS listener. The 80ms-delayed `switch-mode` emit
+            // below acts as a safety re-sync. The fully-correct fix would be
+            // for the JS side to `invoke('ready')` once loaded and have Rust
+            // reply with the init events — left as a future cleanup.
+            show_overlay_at_cursor(&app.handle().clone());
+            // Re-emit switch-mode so the JS side starts in sync.
+            //
+            // NOTE: using blocking `std::thread::sleep` inside an async task is
+            // technically an anti-pattern (it parks a tokio worker for 80ms),
+            // but it only runs once at startup and avoids pulling in a tokio
+            // timer import. If this ever grows, switch to `tokio::time::sleep`.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                std::thread::sleep(std::time::Duration::from_millis(80));
+                let _ = handle.emit("switch-mode", "incense");
             });
 
-            if let Some(window) = app.get_webview_window("overlay") {
-                if let Ok(pos) = app.cursor_position() {
-                    let mut best_monitor = None;
-                    let mut min_dist = f64::MAX;
-                    if let Ok(monitors) = app.available_monitors() {
-                        for m in monitors {
-                            let mp = m.position();
-                            let ms = m.size();
-                            let center_x = mp.x as f64 + (ms.width as f64 / 2.0);
-                            let center_y = mp.y as f64 + (ms.height as f64 / 2.0);
-                            let dist = (pos.x - center_x).powi(2) + (pos.y - center_y).powi(2);
-                            if dist < min_dist { min_dist = dist; best_monitor = Some(m); }
-                        }
-                    }
-                    if let Some(monitor) = best_monitor {
-                        let m_pos = monitor.position();
-                        let _ = window.set_size(*monitor.size());
-                        let _ = window.set_position(*m_pos);
-                        
-                        let rel_x = pos.x - m_pos.x as f64;
-                        let rel_y = pos.y - m_pos.y as f64;
-                        
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                        let _ = window.set_always_on_top(true);
-                        
-                        // 使用非同步等一下再發送事件，確保 JS 已經載入
-                        let handle = app.handle().clone();
-                        let _ = tauri::async_runtime::spawn(async move {
-                            std::thread::sleep(std::time::Duration::from_millis(50));
-                            let _ = handle.emit("spawn-incense", serde_json::json!({ "x": rel_x, "y": rel_y }));
-                        });
-                    }
-                }
-            }
+            // Captures needed by the tray menu event handler
+            let incense_for_menu = incense_item.clone();
+            let slapper_for_menu = slapper_item.clone();
 
             let _tray = TrayIconBuilder::new()
                 .icon(default_icon)
-                .tooltip("拜Claude — 點擊上香")
+                .tooltip("拜Claude")
                 .menu(&menu)
-                .on_menu_event(|app, event| {
-                    if event.id() == "quit" { app.exit(0); }
+                .show_menu_on_left_click(false)
+                .on_menu_event(move |app, event| {
+                    let id = event.id();
+                    if id == "quit" {
+                        app.exit(0);
+                    } else if id == "mode_incense" {
+                        let _ = incense_for_menu.set_text("✓ 🪔 三炷香模式");
+                        let _ = slapper_for_menu.set_text("   ✋ 愛的小手模式");
+                        let _ = app.emit("switch-mode", "incense");
+                    } else if id == "mode_slapper" {
+                        let _ = incense_for_menu.set_text("   🪔 三炷香模式");
+                        let _ = slapper_for_menu.set_text("✓ ✋ 愛的小手模式");
+                        let _ = app.emit("switch-mode", "slapper");
+                    }
                 })
                 .on_tray_icon_event(|tray, event| {
-                    if let tauri::tray::TrayIconEvent::Click { .. } = event {
+                    // Only handle left-button Up; otherwise down + up would double-fire and cancel out
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
                         let app = tray.app_handle();
                         if let Some(window) = app.get_webview_window("overlay") {
                             if window.is_visible().unwrap_or(false) {
-                                let _ = app.emit("drop-incense", ());
+                                let _ = window.hide();
                             } else {
-                                if let Ok(pos) = app.cursor_position() {
-                                    let mut best_m = None;
-                                    let mut min_d = f64::MAX;
-                                    if let Ok(monitors) = app.available_monitors() {
-                                        for m in monitors {
-                                            let mp = m.position();
-                                            let ms = m.size();
-                                            let cx = mp.x as f64 + (ms.width as f64 / 2.0);
-                                            let cy = mp.y as f64 + (ms.height as f64 / 2.0);
-                                            let d = (pos.x - cx).powi(2) + (pos.y - cy).powi(2);
-                                            if d < min_d { min_d = d; best_m = Some(m); }
-                                        }
-                                    }
-                                    if let Some(m) = best_m {
-                                        let m_pos = m.position();
-                                        let _ = window.set_size(*m.size());
-                                        let _ = window.set_position(*m_pos);
-                                        let rel_x = pos.x - m_pos.x as f64;
-                                        let rel_y = pos.y - m_pos.y as f64;
-                                        let _ = window.show();
-                                        let _ = window.set_focus();
-                                        let _ = window.set_always_on_top(true);
-                                        let _ = app.emit("spawn-incense", serde_json::json!({ "x": rel_x, "y": rel_y }));
-                                    }
-                                }
+                                show_overlay_at_cursor(app);
                             }
                         }
                     }
@@ -128,11 +184,18 @@ fn main() {
                 .build(app)?;
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app_handle, event| {
+        // Clicking the Dock icon (macOS) → show the overlay
+        if let RunEvent::Reopen { .. } = event {
+            show_overlay_at_cursor(app_handle);
+        }
+    });
 }
 
-/// Send Alt+Tab (Win) / Cmd+Tab (Mac) to return focus to the previous app
+/// Send Cmd+Tab (Mac) / Alt+Tab (Win) to return focus to the previous app
 fn refocus_previous_app() {
     std::thread::spawn(|| {
         #[cfg(target_os = "macos")]

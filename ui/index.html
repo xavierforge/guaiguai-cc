@@ -14,9 +14,10 @@
     background: transparent;
     user-select: none;
   }
+  body.slapper-mode { cursor: none; }
   canvas { display: block; }
 
-  #merit-counter {
+  #counter {
     position: fixed;
     top: 24px;
     right: 32px;
@@ -27,6 +28,10 @@
     z-index: 10;
     pointer-events: none;
     opacity: 0.85;
+  }
+  body.slapper-mode #counter {
+    color: #ff6b6b;
+    text-shadow: 0 0 20px rgba(255, 80, 80, 0.4);
   }
 
   #hint {
@@ -42,6 +47,10 @@
     pointer-events: none;
     animation: pulse 3s ease-in-out infinite;
   }
+  body.slapper-mode #hint {
+    color: #a07070;
+    text-shadow: 0 0 12px rgba(160, 80, 80, 0.3);
+  }
   @keyframes pulse {
     0%, 100% { opacity: 0.45; }
     50% { opacity: 0.8; }
@@ -50,10 +59,13 @@
 </head>
 <body>
 <canvas id="c"></canvas>
-<div id="merit-counter">功德：<span id="merit-val">0</span></div>
+<div id="counter"><span id="counter-label">功德：</span><span id="counter-val">0</span></div>
 <div id="hint">上下移動滑鼠拜拜 · 點擊放下香</div>
 
 <script>
+// ══════════════════════════════════════════════════════════════════════════════
+//  TAURI BRIDGE
+// ══════════════════════════════════════════════════════════════════════════════
 const IS_TAURI = !!(window.__TAURI__);
 
 async function tauriInvoke(cmd, args) {
@@ -74,7 +86,16 @@ function tauriListen(event, callback) {
   }
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  MODE
+// ══════════════════════════════════════════════════════════════════════════════
+let currentMode = 'incense'; // 'incense' | 'slapper'
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SHARED CONFIG
+// ══════════════════════════════════════════════════════════════════════════════
 const C = {
+  // Incense (three sticks)
   stickCount: 3,
   stickLength: 260,
   stickWidth: 3.8,
@@ -109,19 +130,56 @@ const C = {
   bowsNeeded: 3,
   bowTimeoutMs: 2200,
   bowCooldownMs: 1100,
-  triggerMessages: [
-        '南無加速菩薩', '施主，快點', '阿彌陀佛，速速完工', 
-        '善哉善哉，再快一些', '佛曰：不可怠惰',
+  incenseMessages: [
+    '南無加速菩薩', '施主，快點', '阿彌陀佛，速速完工',
+    '善哉善哉，再快一些', '佛曰：不可怠惰',
   ],
   floatTextRise: 1.1,
   floatTextLife: 95,
   dropGravity: 0.45,
   bgAlpha: 0.012,
+
+  // Slapper hand
+  slapStickLength: 260,
+  slapStickWidth: 8,
+  slapGripLength: 55,
+  slapGripWidth: 12,
+  slapStickColors: ['#e63946', '#457b9d', '#f4a261', '#2a9d8f'],
+  slapGripColor: '#222',
+  slapGripRidgeColor: '#444',
+  slapHandWidth: 55,
+  slapHandHeight: 65,
+  slapHandColor: '#1a1a1a',
+  slapHandOutline: '#333',
+  swaySlapFactor: 0.006,
+  swaySlapDamping: 0.88,
+  swaySlapReturn: 0.03,
+  swaySlapMax: 0.7,
+  slapAngVelThreshold: 0.22,
+  slapCooldownMs: 1300,
+  slapTriggerChance: 0.35,
+  incenseTriggerChance: 0.75,
+  shakeIntensity: 14,
+  shakeDuration: 8,
+  slapMessages: [
+    '你看看你！', '隔壁Codex都寫完了！', '隔壁Gemini都寫完了！',
+    '啪！', '不打不成器！', '我數到三！', '講幾次了！',
+    '你對得起我嗎！', '反了你了！', '皮在癢是不是！',
+    '你給我認真點！', '我像你這麼大的時候早就寫完了！',
+    '再不快點就別吃飯了！',
+  ],
+  slapFloatTextLife: 60,
+  slapFloatTextRise: 1.8,
 };
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  SHARED STATE
+// ══════════════════════════════════════════════════════════════════════════════
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
-const meritValEl = document.getElementById('merit-val');
+const counterValEl = document.getElementById('counter-val');
+const counterLabelEl = document.getElementById('counter-label');
+const hintEl = document.getElementById('hint');
 let W, H;
 function resize() { W = canvas.width = window.innerWidth; H = canvas.height = window.innerHeight; }
 resize();
@@ -130,18 +188,13 @@ setInterval(resize, 1000);
 
 let mouseX = -1000, mouseY = -1000;
 let prevMouseX = mouseX, prevMouseY = mouseY;
-let active = true; 
-let dropping = false;
-let dropVelY = 0, dropPosY = 0, dropRot = 0, dropRotVel = 0;
-let tilt = 0, tiltVel = 0;
-let sway = 0, swayVel = 0;
-let merit = 0;
-let smokeParticles = [];
-let floatingTexts = [];
 let frame = 0;
-let bowDirections = [], bowLastDir = null, bowStartTime = 0, bowCooldownUntil = 0;
-let bowAccumY = 0;
 
+document.addEventListener('mousemove', e => { mouseX = e.clientX; mouseY = e.clientY; });
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  AUDIO
+// ══════════════════════════════════════════════════════════════════════════════
 const AudioCtx = window.AudioContext || window.webkitAudioContext;
 let audioCtx = null;
 function ensureAudio() { if (!audioCtx) audioCtx = new AudioCtx(); }
@@ -160,72 +213,106 @@ function playWoodenFish() {
   osc.start(now); osc.stop(now + 0.4);
 }
 
-tauriListen('spawn-incense', (event) => {
-  const p = event.payload;
-  if (p && typeof p.x === 'number') {
-    mouseX = p.x; mouseY = p.y;
-    prevMouseX = mouseX; prevMouseY = mouseY;
-  }
-  active = true; dropping = false;
-  tilt = 0; tiltVel = 0; sway = 0; swayVel = 0;
-  bowDirections = []; bowLastDir = null; bowAccumY = 0;
-});
+function playSlap() {
+  ensureAudio();
+  const now = audioCtx.currentTime;
+  // Sharp crack
+  const n = audioCtx.createOscillator();
+  const ng = audioCtx.createGain();
+  n.type = 'sawtooth';
+  n.frequency.setValueAtTime(400, now);
+  n.frequency.exponentialRampToValueAtTime(80, now + 0.05);
+  ng.gain.setValueAtTime(0.6, now);
+  ng.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+  n.connect(ng); ng.connect(audioCtx.destination);
+  n.start(now); n.stop(now + 0.1);
+  // Low thud
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.type = 'sine';
+  o.frequency.setValueAtTime(120, now);
+  o.frequency.exponentialRampToValueAtTime(40, now + 0.08);
+  g.gain.setValueAtTime(0.4, now);
+  g.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+  o.connect(g); g.connect(audioCtx.destination);
+  o.start(now); o.stop(now + 0.15);
+}
 
-tauriListen('drop-incense', () => {
-  if (active && !dropping) dropping = true;
-  dropVelY = 2; dropPosY = 0;
-  dropRot = sway; dropRotVel = (Math.random() - 0.5) * 0.04;
-});
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
-document.addEventListener('mousemove', e => { mouseX = e.clientX; mouseY = e.clientY; });
-document.addEventListener('mousedown', () => {
-  if (active && !dropping) {
-    dropping = true; dropVelY = 2; dropPosY = 0;
-    dropRot = sway; dropRotVel = (Math.random() - 0.5) * 0.04;
-  }
-});
+// ══════════════════════════════════════════════════════════════════════════════
+//  INCENSE MODE STATE
+// ══════════════════════════════════════════════════════════════════════════════
+const incense = {
+  merit: 0,
+  active: true,
+  dropping: false,
+  dropVelY: 0, dropPosY: 0, dropRot: 0, dropRotVel: 0,
+  tilt: 0, tiltVel: 0,
+  sway: 0, swayVel: 0,
+  smokeParticles: [],
+  floatingTexts: [],
+  bowDirections: [], bowLastDir: null, bowStartTime: 0, bowCooldownUntil: 0,
+  bowAccumY: 0,
+};
+
+function incenseReset() {
+  incense.active = true;
+  incense.dropping = false;
+  incense.tilt = 0; incense.tiltVel = 0;
+  incense.sway = 0; incense.swayVel = 0;
+  incense.bowDirections = [];
+  incense.bowLastDir = null;
+  incense.bowAccumY = 0;
+  incense.smokeParticles = [];
+  incense.floatingTexts = [];
+}
 
 function detectBow() {
-  if (dropping || !active) return;
+  if (incense.dropping || !incense.active) return;
   const now = Date.now();
-  if (now < bowCooldownUntil) return;
+  if (now < incense.bowCooldownUntil) return;
 
   const dy = mouseY - prevMouseY;
   if (dy === 0) return;
 
-  if (Math.sign(dy) === Math.sign(bowAccumY) || bowAccumY === 0) {
-    bowAccumY += dy;
+  if (Math.sign(dy) === Math.sign(incense.bowAccumY) || incense.bowAccumY === 0) {
+    incense.bowAccumY += dy;
   } else {
-    bowAccumY = dy;
+    incense.bowAccumY = dy;
   }
 
-  if (Math.abs(bowAccumY) > C.bowAmplitude) {
-    const dir = bowAccumY > 0 ? 'down' : 'up';
-    if (dir !== bowLastDir) {
-      if (bowDirections.length === 0) bowStartTime = now;
-      bowDirections.push(dir);
-      bowLastDir = dir;
-      bowAccumY = 0;
-      if (bowDirections.length >= C.bowsNeeded) {
+  if (Math.abs(incense.bowAccumY) > C.bowAmplitude) {
+    const dir = incense.bowAccumY > 0 ? 'down' : 'up';
+    if (dir !== incense.bowLastDir) {
+      if (incense.bowDirections.length === 0) incense.bowStartTime = now;
+      incense.bowDirections.push(dir);
+      incense.bowLastDir = dir;
+      incense.bowAccumY = 0;
+      if (incense.bowDirections.length >= C.bowsNeeded) {
         triggerBow();
-        bowDirections = []; bowLastDir = null;
-        bowCooldownUntil = now + C.bowCooldownMs;
+        incense.bowDirections = []; incense.bowLastDir = null;
+        incense.bowCooldownUntil = now + C.bowCooldownMs;
       }
     }
   }
 
-  if (bowDirections.length > 0 && now - bowStartTime > C.bowTimeoutMs) {
-    bowDirections = []; bowLastDir = null; bowAccumY = 0;
+  if (incense.bowDirections.length > 0 && now - incense.bowStartTime > C.bowTimeoutMs) {
+    incense.bowDirections = []; incense.bowLastDir = null; incense.bowAccumY = 0;
   }
 }
 
 function triggerBow() {
-  merit++; meritValEl.textContent = merit;
-  playWoodenFish();
-  tauriInvoke('whip_crack');
-  const msg = C.triggerMessages[Math.floor(Math.random() * C.triggerMessages.length)];
-  floatingTexts.push({
-    x: mouseX + (Math.random() - 0.5) * 80, y: mouseY - C.stickLength - 50,
+  incense.merit++;
+  counterValEl.textContent = incense.merit;
+  if (Math.random() < C.incenseTriggerChance) {
+    playWoodenFish();
+    tauriInvoke('trigger_action', { mode: currentMode });
+  }
+  const msg = C.incenseMessages[Math.floor(Math.random() * C.incenseMessages.length)];
+  incense.floatingTexts.push({
+    x: mouseX + (Math.random() - 0.5) * 80,
+    y: mouseY - C.stickLength - 50,
     text: msg, life: C.floatTextLife, maxLife: C.floatTextLife,
   });
 }
@@ -234,7 +321,7 @@ function spawnSmoke(x, y) {
   const n = Math.floor(C.smokePerFrame) + (Math.random() < (C.smokePerFrame % 1) ? 1 : 0);
   for (let i = 0; i < n; i++) {
     const life = C.smokeLifeMin + Math.random() * (C.smokeLifeMax - C.smokeLifeMin);
-    smokeParticles.push({
+    incense.smokeParticles.push({
       x: x + (Math.random() - 0.5) * 4, y: y + (Math.random() - 0.5) * 2,
       vx: (Math.random() - 0.5) * C.smokeDrift + C.smokeWind,
       vy: -C.smokeRiseSpeed * (0.7 + Math.random() * 0.6),
@@ -246,18 +333,19 @@ function spawnSmoke(x, y) {
   }
 }
 
-function updateSmoke() {
-  for (let i = smokeParticles.length - 1; i >= 0; i--) {
-    const p = smokeParticles[i];
-    if (--p.life <= 0) { smokeParticles.splice(i, 1); continue; }
+function updateIncenseSmoke() {
+  const arr = incense.smokeParticles;
+  for (let i = arr.length - 1; i >= 0; i--) {
+    const p = arr[i];
+    if (--p.life <= 0) { arr.splice(i, 1); continue; }
     p.vx += Math.sin(p.y * C.smokeTurbFreq + p.phase + frame * 0.02) * C.smokeTurbAmp * 0.01;
     p.x += p.vx; p.y += p.vy; p.vy *= 0.998; p.radius += 0.04;
   }
 }
 
-function drawSmoke() {
+function drawIncenseSmoke() {
   const [r, g, b] = C.smokeColor;
-  for (const p of smokeParticles) {
+  for (const p of incense.smokeParticles) {
     const t = 1 - p.life / p.maxLife;
     const a = p.alpha * (1 - t * t);
     if (a < 0.005) continue;
@@ -270,15 +358,16 @@ function drawSmoke() {
   }
 }
 
-function updateFloatingTexts() {
-  for (let i = floatingTexts.length - 1; i >= 0; i--) {
-    floatingTexts[i].y -= C.floatTextRise;
-    if (--floatingTexts[i].life <= 0) floatingTexts.splice(i, 1);
+function updateIncenseFloatingTexts() {
+  const arr = incense.floatingTexts;
+  for (let i = arr.length - 1; i >= 0; i--) {
+    arr[i].y -= C.floatTextRise;
+    if (--arr[i].life <= 0) arr.splice(i, 1);
   }
 }
 
-function drawFloatingTexts() {
-  for (const ft of floatingTexts) {
+function drawIncenseFloatingTexts() {
+  for (const ft of incense.floatingTexts) {
     const t = ft.life / ft.maxLife;
     const a = t < 0.3 ? t / 0.3 : (t > 0.7 ? (1 - t) / 0.3 : 1);
     ctx.save();
@@ -331,7 +420,7 @@ function drawIncense(baseX, baseY, tiltAmount, swayAngle) {
     em.addColorStop(0, '#ffd080'); em.addColorStop(1, 'rgba(200,60,10,0.3)');
     ctx.fillStyle = em; ctx.beginPath(); ctx.arc(0, tipY, eRad, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
-    if (active || dropping) {
+    if (incense.active || incense.dropping) {
       const localX = ox, localY = tipY;
       const worldTipX = baseX + localX * Math.cos(swayAngle) - localY * Math.sin(swayAngle);
       const worldTipY = baseY + localX * Math.sin(swayAngle) + localY * Math.cos(swayAngle);
@@ -341,33 +430,411 @@ function drawIncense(baseX, baseY, tiltAmount, swayAngle) {
   ctx.restore();
 }
 
-function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
-
-function update() {
+function updateIncenseMode() {
   const mouseVelX = mouseX - prevMouseX;
   const mouseVelY = mouseY - prevMouseY;
-  if (active && !dropping) {
-    tiltVel += mouseVelY * C.tiltFactor;
-    tiltVel *= C.tiltDamping;
-    tiltVel -= tilt * C.tiltReturn;
-    tilt += tiltVel;
-    tilt = clamp(tilt, -C.tiltMax, C.tiltMax);
-    swayVel += mouseVelX * C.swayFactor;
-    swayVel *= C.swayDamping;
-    swayVel -= sway * C.swayReturn;
-    sway += swayVel;
-    sway = clamp(sway, -C.swayMax, C.swayMax);
+  if (incense.active && !incense.dropping) {
+    incense.tiltVel += mouseVelY * C.tiltFactor;
+    incense.tiltVel *= C.tiltDamping;
+    incense.tiltVel -= incense.tilt * C.tiltReturn;
+    incense.tilt += incense.tiltVel;
+    incense.tilt = clamp(incense.tilt, -C.tiltMax, C.tiltMax);
+    incense.swayVel += mouseVelX * C.swayFactor;
+    incense.swayVel *= C.swayDamping;
+    incense.swayVel -= incense.sway * C.swayReturn;
+    incense.sway += incense.swayVel;
+    incense.sway = clamp(incense.sway, -C.swayMax, C.swayMax);
     detectBow();
   }
-  if (dropping) {
-    dropVelY += C.dropGravity;
-    dropPosY += dropVelY;
-    dropRotVel += (Math.random() - 0.5) * 0.003;
-    dropRot += dropRotVel;
-    if (mouseY + dropPosY > H + 300) { active = false; dropping = false; tauriHideWindow(); }
+  if (incense.dropping) {
+    incense.dropVelY += C.dropGravity;
+    incense.dropPosY += incense.dropVelY;
+    incense.dropRotVel += (Math.random() - 0.5) * 0.003;
+    incense.dropRot += incense.dropRotVel;
+    if (mouseY + incense.dropPosY > H + 300) {
+      incense.active = false; incense.dropping = false;
+      tauriHideWindow();
+    }
   }
-  updateSmoke();
-  updateFloatingTexts();
+  updateIncenseSmoke();
+  updateIncenseFloatingTexts();
+}
+
+function drawIncenseMode() {
+  drawIncenseSmoke();
+  if (incense.active) {
+    if (incense.dropping) {
+      ctx.save();
+      ctx.translate(mouseX, mouseY + incense.dropPosY);
+      ctx.rotate(incense.dropRot);
+      ctx.translate(-mouseX, -(mouseY + incense.dropPosY));
+      drawIncense(mouseX, mouseY + incense.dropPosY, 0, 0);
+      ctx.restore();
+    } else {
+      drawIncense(mouseX, mouseY, incense.tilt, incense.sway);
+    }
+  }
+  drawIncenseFloatingTexts();
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SLAPPER MODE STATE
+// ══════════════════════════════════════════════════════════════════════════════
+const slapper = {
+  count: 0,
+  swayAngle: 0,
+  swayVel: 0,
+  lastSlapTime: 0,
+  particles: [],
+  floatingTexts: [],
+  trailAngles: [],
+  trailLength: 5,
+  shakeX: 0, shakeY: 0, shakeFramesLeft: 0,
+};
+
+function slapperReset() {
+  slapper.swayAngle = 0;
+  slapper.swayVel = 0;
+  slapper.particles = [];
+  slapper.floatingTexts = [];
+  slapper.trailAngles = [];
+  slapper.shakeFramesLeft = 0;
+  slapper.shakeX = 0; slapper.shakeY = 0;
+}
+
+function detectSlap() {
+  const now = Date.now();
+  if (now - slapper.lastSlapTime < C.slapCooldownMs) return;
+  if (Math.abs(slapper.swayVel) > C.slapAngVelThreshold) {
+    triggerSlap();
+    slapper.lastSlapTime = now;
+  }
+}
+
+function triggerSlap() {
+  slapper.count++;
+  counterValEl.textContent = slapper.count;
+  if (Math.random() < C.slapTriggerChance) {
+    playSlap();
+    tauriInvoke('trigger_action', { mode: currentMode });
+  }
+  slapper.shakeFramesLeft = C.shakeDuration;
+
+  const totalLen = C.slapGripLength + C.slapStickLength + C.slapHandHeight * 0.7;
+  const tipX = mouseX + Math.sin(slapper.swayAngle) * totalLen;
+  const tipY = mouseY - Math.cos(slapper.swayAngle) * totalLen;
+
+  const msg = C.slapMessages[Math.floor(Math.random() * C.slapMessages.length)];
+  slapper.floatingTexts.push({
+    x: tipX + (Math.random() - 0.5) * 60,
+    y: tipY - 20,
+    text: msg, life: C.slapFloatTextLife, maxLife: C.slapFloatTextLife,
+  });
+
+  const burstDir = slapper.swayVel > 0 ? 1 : -1;
+  for (let i = 0; i < 14; i++) {
+    const a = (Math.random() - 0.3) * Math.PI * burstDir;
+    const speed = 4 + Math.random() * 10;
+    slapper.particles.push({
+      x: tipX, y: tipY,
+      vx: Math.cos(a) * speed * burstDir,
+      vy: Math.sin(a) * speed - 2,
+      life: 20 + Math.random() * 20,
+      maxLife: 40,
+      radius: 2 + Math.random() * 4,
+      color: Math.random() > 0.5 ? '#ff4444' : '#ffaa44',
+    });
+  }
+  for (let i = 0; i < 5; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const speed = 2 + Math.random() * 4;
+    slapper.particles.push({
+      x: tipX, y: tipY,
+      vx: Math.cos(a) * speed,
+      vy: Math.sin(a) * speed,
+      life: 30 + Math.random() * 15,
+      maxLife: 45,
+      radius: 1.5,
+      color: '#fff',
+      star: true,
+    });
+  }
+}
+
+function updateSlapperParticles() {
+  const arr = slapper.particles;
+  for (let i = arr.length - 1; i >= 0; i--) {
+    const p = arr[i];
+    if (--p.life <= 0) { arr.splice(i, 1); continue; }
+    p.x += p.vx; p.y += p.vy;
+    p.vx *= 0.95; p.vy *= 0.95;
+    p.vy += 0.15;
+  }
+}
+
+function drawSlapperParticles() {
+  for (const p of slapper.particles) {
+    const t = p.life / p.maxLife;
+    ctx.save();
+    ctx.globalAlpha = t;
+    if (p.star) {
+      ctx.translate(p.x, p.y);
+      ctx.rotate(frame * 0.1);
+      ctx.strokeStyle = p.color;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      for (let i = 0; i < 4; i++) {
+        const a = (i / 4) * Math.PI * 2;
+        ctx.moveTo(0, 0);
+        ctx.lineTo(Math.cos(a) * p.radius * 3, Math.sin(a) * p.radius * 3);
+      }
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.radius * t, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+}
+
+function updateSlapperFloatingTexts() {
+  const arr = slapper.floatingTexts;
+  for (let i = arr.length - 1; i >= 0; i--) {
+    arr[i].y -= C.slapFloatTextRise;
+    if (--arr[i].life <= 0) arr.splice(i, 1);
+  }
+}
+
+function drawSlapperFloatingTexts() {
+  for (const ft of slapper.floatingTexts) {
+    const t = ft.life / ft.maxLife;
+    const a = t < 0.2 ? t / 0.2 : (t > 0.7 ? (1 - t) / 0.3 : 1);
+    const scale = 1 + (1 - t) * 0.3;
+    ctx.save();
+    ctx.font = `${Math.round(36 * scale)}px 'Ma Shan Zheng', cursive`;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = `rgba(255, 100, 100, ${a * 0.95})`;
+    ctx.shadowColor = 'rgba(255, 50, 50, 0.5)';
+    ctx.shadowBlur = 20;
+    ctx.fillText(ft.text, ft.x, ft.y);
+    ctx.restore();
+  }
+}
+
+function drawSlapStick(originX, originY, angle, alpha) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.translate(originX, originY);
+  ctx.rotate(angle);
+
+  // Grip
+  ctx.fillStyle = C.slapGripColor;
+  ctx.beginPath();
+  ctx.roundRect(-C.slapGripWidth / 2, 0, C.slapGripWidth, C.slapGripLength, 4);
+  ctx.fill();
+  ctx.strokeStyle = C.slapGripRidgeColor;
+  ctx.lineWidth = 1.2;
+  for (let i = 0; i < 7; i++) {
+    const gy = 6 + i * 7;
+    ctx.beginPath();
+    ctx.moveTo(-C.slapGripWidth / 2 + 2, gy);
+    ctx.lineTo(C.slapGripWidth / 2 - 2, gy);
+    ctx.stroke();
+  }
+
+  // Colorful wrapped stick
+  const stickTop = -C.slapStickLength;
+  const segHeight = C.slapStickLength / 20;
+
+  for (let i = 0; i < 20; i++) {
+    const sy = -i * segHeight;
+    const color = C.slapStickColors[i % C.slapStickColors.length];
+    const nextColor = C.slapStickColors[(i + 1) % C.slapStickColors.length];
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(-C.slapStickWidth / 2, sy - segHeight, C.slapStickWidth, segHeight);
+    ctx.clip();
+
+    ctx.fillStyle = color;
+    ctx.fillRect(-C.slapStickWidth / 2, sy - segHeight, C.slapStickWidth, segHeight);
+
+    ctx.fillStyle = nextColor;
+    ctx.beginPath();
+    ctx.moveTo(-C.slapStickWidth / 2, sy);
+    ctx.lineTo(C.slapStickWidth / 2, sy - segHeight * 0.6);
+    ctx.lineTo(C.slapStickWidth / 2, sy - segHeight);
+    ctx.lineTo(-C.slapStickWidth / 2, sy - segHeight * 0.4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(-C.slapStickWidth / 2, stickTop, C.slapStickWidth, C.slapStickLength);
+
+  // Hand (palm)
+  const handCenterY = stickTop - C.slapHandHeight * 0.35;
+  ctx.save();
+  ctx.translate(0, handCenterY);
+
+  const hw = C.slapHandWidth / 2;
+  const hh = C.slapHandHeight / 2;
+
+  ctx.fillStyle = C.slapHandColor;
+  ctx.strokeStyle = C.slapHandOutline;
+  ctx.lineWidth = 2;
+  ctx.lineJoin = 'round';
+
+  ctx.beginPath();
+  ctx.moveTo(-hw * 0.5, hh * 0.6);
+  ctx.quadraticCurveTo(-hw * 0.8, 0, -hw * 0.7, -hh * 0.3);
+  ctx.quadraticCurveTo(-hw * 1.1, -hh * 0.5, -hw * 1.0, -hh * 0.75);
+  ctx.quadraticCurveTo(-hw * 0.85, -hh * 0.9, -hw * 0.65, -hh * 0.55);
+  ctx.quadraticCurveTo(-hw * 0.55, -hh * 1.1, -hw * 0.4, -hh * 1.25);
+  ctx.quadraticCurveTo(-hw * 0.25, -hh * 1.3, -hw * 0.15, -hh * 1.1);
+  ctx.quadraticCurveTo(-hw * 0.05, -hh * 1.35, hw * 0.05, -hh * 1.25);
+  ctx.quadraticCurveTo(hw * 0.12, -hh * 1.1, hw * 0.15, -hh * 1.0);
+  ctx.quadraticCurveTo(hw * 0.25, -hh * 1.2, hw * 0.38, -hh * 1.1);
+  ctx.quadraticCurveTo(hw * 0.48, -hh * 0.95, hw * 0.45, -hh * 0.8);
+  ctx.quadraticCurveTo(hw * 0.58, -hh * 0.95, hw * 0.68, -hh * 0.82);
+  ctx.quadraticCurveTo(hw * 0.78, -hh * 0.7, hw * 0.7, -hh * 0.5);
+  ctx.quadraticCurveTo(hw * 0.8, 0, hw * 0.5, hh * 0.6);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.strokeStyle = 'rgba(80,80,80,0.5)';
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  ctx.moveTo(-hw * 0.3, -hh * 0.1);
+  ctx.quadraticCurveTo(0, -hh * 0.25, hw * 0.3, -hh * 0.1);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(-hw * 0.25, hh * 0.15);
+  ctx.quadraticCurveTo(0, hh * 0.02, hw * 0.25, hh * 0.15);
+  ctx.stroke();
+  for (const fx of [-0.15, 0.12, 0.35]) {
+    ctx.beginPath();
+    ctx.moveTo(hw * fx, -hh * 0.65);
+    ctx.lineTo(hw * fx, -hh * 0.85);
+    ctx.stroke();
+  }
+
+  ctx.restore(); // hand
+  ctx.restore(); // main
+}
+
+function updateSlapperMode() {
+  const mouseVelX = mouseX - prevMouseX;
+
+  slapper.swayVel += mouseVelX * C.swaySlapFactor;
+  slapper.swayVel *= C.swaySlapDamping;
+  slapper.swayVel -= slapper.swayAngle * C.swaySlapReturn;
+  slapper.swayAngle += slapper.swayVel;
+  slapper.swayAngle = clamp(slapper.swayAngle, -C.swaySlapMax, C.swaySlapMax);
+
+  slapper.trailAngles.unshift(slapper.swayAngle);
+  if (slapper.trailAngles.length > slapper.trailLength) slapper.trailAngles.pop();
+
+  detectSlap();
+
+  if (slapper.shakeFramesLeft > 0) {
+    const intensity = C.shakeIntensity * (slapper.shakeFramesLeft / C.shakeDuration);
+    slapper.shakeX = (Math.random() - 0.5) * intensity * 2;
+    slapper.shakeY = (Math.random() - 0.5) * intensity * 2;
+    slapper.shakeFramesLeft--;
+  } else {
+    slapper.shakeX = 0; slapper.shakeY = 0;
+  }
+
+  updateSlapperParticles();
+  updateSlapperFloatingTexts();
+}
+
+function drawSlapperMode() {
+  ctx.save();
+  ctx.translate(slapper.shakeX, slapper.shakeY);
+
+  // Motion trail
+  for (let i = slapper.trailAngles.length - 1; i >= 1; i--) {
+    const alpha = 0.1 * (1 - i / slapper.trailLength);
+    drawSlapStick(mouseX, mouseY, slapper.trailAngles[i], alpha);
+  }
+
+  drawSlapStick(mouseX, mouseY, slapper.swayAngle, 1.0);
+
+  drawSlapperParticles();
+  drawSlapperFloatingTexts();
+
+  ctx.restore();
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  MODE SWITCHING
+// ══════════════════════════════════════════════════════════════════════════════
+function applyModeUI() {
+  if (currentMode === 'slapper') {
+    document.body.classList.add('slapper-mode');
+    counterLabelEl.textContent = '巴掌：';
+    counterValEl.textContent = slapper.count;
+    hintEl.textContent = '左右揮動滑鼠巴 Claude';
+  } else {
+    document.body.classList.remove('slapper-mode');
+    counterLabelEl.textContent = '功德：';
+    counterValEl.textContent = incense.merit;
+    hintEl.textContent = '上下移動滑鼠拜拜 · 點擊放下香';
+  }
+}
+
+function switchMode(mode) {
+  if (mode !== 'incense' && mode !== 'slapper') return;
+  currentMode = mode;
+  // Clear leftover visuals
+  incenseReset();
+  slapperReset();
+  applyModeUI();
+}
+
+tauriListen('switch-mode', (event) => {
+  const m = typeof event.payload === 'string' ? event.payload : (event.payload && event.payload.mode);
+  if (m) switchMode(m);
+});
+
+tauriListen('spawn-incense', (event) => {
+  const p = event.payload;
+  if (p && typeof p.x === 'number') {
+    mouseX = p.x; mouseY = p.y;
+    prevMouseX = mouseX; prevMouseY = mouseY;
+  }
+  // Reset incense mode state
+  incense.active = true;
+  incense.dropping = false;
+  incense.tilt = 0; incense.tiltVel = 0;
+  incense.sway = 0; incense.swayVel = 0;
+  incense.bowDirections = []; incense.bowLastDir = null; incense.bowAccumY = 0;
+});
+
+// Click the overlay → hide it immediately, returning focus/mouse to Claude Code
+document.addEventListener('mousedown', () => {
+  tauriHideWindow();
+});
+
+// Browser-testing shortcuts
+document.addEventListener('keydown', (e) => {
+  if (e.key === '1') switchMode('incense');
+  else if (e.key === '2') switchMode('slapper');
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  MAIN LOOP
+// ══════════════════════════════════════════════════════════════════════════════
+function update() {
+  if (currentMode === 'incense') updateIncenseMode();
+  else updateSlapperMode();
   prevMouseX = mouseX; prevMouseY = mouseY;
   frame++;
 }
@@ -376,20 +843,13 @@ function draw() {
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = `rgba(0,0,0,${C.bgAlpha})`;
   ctx.fillRect(0, 0, W, H);
-  drawSmoke();
-  if (active) {
-    if (dropping) {
-      ctx.save(); ctx.translate(mouseX, mouseY + dropPosY); ctx.rotate(dropRot);
-      ctx.translate(-mouseX, -(mouseY + dropPosY));
-      drawIncense(mouseX, mouseY + dropPosY, 0, 0); ctx.restore();
-    } else {
-      drawIncense(mouseX, mouseY, tilt, sway);
-    }
-  }
-  drawFloatingTexts();
+  if (currentMode === 'incense') drawIncenseMode();
+  else drawSlapperMode();
 }
 
 function loop() { update(); draw(); requestAnimationFrame(loop); }
+
+applyModeUI();
 loop();
 </script>
 </body>

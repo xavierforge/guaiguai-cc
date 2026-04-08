@@ -1,21 +1,45 @@
-/// Send Ctrl+C (interrupt), type a message, then press Enter.
-/// This is the equivalent of badclaude's sendMacro().
+//! Platform-specific macro sender: paste a message into the focused app,
+//! then press Enter.
+//!
+//! - macOS: put the text on the clipboard via `pbcopy`, then Cmd+V via AppleScript.
+//! - Windows: type each char as Unicode via `SendInput`.
+//!
+//! Going through the clipboard / Unicode paths avoids the IME and modifier
+//! quirks that AppleScript `keystroke` runs into.
 
 #[cfg(target_os = "macos")]
 pub fn send_macro(text: &str) -> Result<(), String> {
-    let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
-    let script = format!(
-        r#"tell application "System Events"
-  key code 8 using {{control down}}
-  delay 0.5
-  keystroke "{escaped}"
-  key code 36
-end tell"#
-    );
+    use std::io::Write;
 
+    // 1. Put text on the clipboard via pbcopy
+    let mut child = std::process::Command::new("pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("pbcopy spawn failed: {e}"))?;
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin
+            .write_all(text.as_bytes())
+            .map_err(|e| format!("pbcopy write failed: {e}"))?;
+    }
+    child
+        .wait()
+        .map_err(|e| format!("pbcopy wait failed: {e}"))?;
+
+    // 2. Cmd+V to paste, then Return (give the paste time to actually land).
+    //
+    // Use `key code 9` (the V key) instead of `keystroke "v"`. The `keystroke`
+    // form goes through character-to-key translation and occasionally emits
+    // the V with the wrong modifier (showing up as Option+V / ^[v in terminals).
+    // `key code` sends the raw virtual-key event so the Command modifier sticks.
+    let script = r#"tell application "System Events"
+  key code 9 using {command down}
+  delay 0.2
+  key code 36
+  delay 0.05
+end tell"#;
     std::process::Command::new("osascript")
         .arg("-e")
-        .arg(&script)
+        .arg(script)
         .output()
         .map_err(|e| format!("osascript failed: {e}"))?;
     Ok(())
@@ -26,20 +50,7 @@ pub fn send_macro(text: &str) -> Result<(), String> {
     use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
     unsafe {
-        // Ctrl down
-        let inputs = [make_key_input(VK_CONTROL, KEYBD_EVENT_FLAGS(0))];
-        SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
-        
-        // C down/up
-        send_key_press(VK_C);
-        
-        // Ctrl up
-        let inputs = [make_key_input(VK_CONTROL, KEYEVENTF_KEYUP)];
-        SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
-
-        std::thread::sleep(std::time::Duration::from_millis(100));
-
-        // Type the message
+        // Type the message as Unicode (handles CJK / emoji without IME issues)
         for ch in text.chars() {
             send_char(ch);
         }
