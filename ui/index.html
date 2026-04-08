@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>拜 Claude</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Ma+Shan+Zheng&display=swap');
+  * { margin: 0; padding: 0; }
+  html, body {
+    overflow: hidden;
+    width: 100%;
+    height: 100%;
+    background: transparent;
+    user-select: none;
+  }
+  canvas { display: block; }
+
+  #merit-counter {
+    position: fixed;
+    top: 24px;
+    right: 32px;
+    font-family: 'Ma Shan Zheng', cursive;
+    font-size: 28px;
+    color: #f5d99a;
+    text-shadow: 0 0 20px rgba(245, 180, 60, 0.4);
+    z-index: 10;
+    pointer-events: none;
+    opacity: 0.85;
+  }
+
+  #hint {
+    position: fixed;
+    bottom: 28px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-family: 'Ma Shan Zheng', cursive;
+    font-size: 20px;
+    color: #a08860;
+    text-shadow: 0 0 12px rgba(160, 120, 60, 0.3);
+    z-index: 10;
+    pointer-events: none;
+    animation: pulse 3s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 0.45; }
+    50% { opacity: 0.8; }
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="merit-counter">功德：<span id="merit-val">0</span></div>
+<div id="hint">上下移動滑鼠拜拜 · 點擊放下香</div>
+
+<script>
+const IS_TAURI = !!(window.__TAURI__);
+
+async function tauriInvoke(cmd, args) {
+  if (IS_TAURI) {
+    return window.__TAURI__.core.invoke(cmd, args);
+  }
+}
+
+async function tauriHideWindow() {
+  if (IS_TAURI) {
+    return window.__TAURI__.window.getCurrentWindow().hide();
+  }
+}
+
+function tauriListen(event, callback) {
+  if (IS_TAURI) {
+    window.__TAURI__.event.listen(event, callback);
+  }
+}
+
+const C = {
+  stickCount: 3,
+  stickLength: 260,
+  stickWidth: 3.8,
+  stickSpacing: 7,
+  stickColor: '#c8553a',
+  stickBurnColor: '#e8923a',
+  stickAshColor: '#8a8078',
+  stickWoodColor: '#d4a06a',
+  emberRadius: 4.5,
+  emberGlowRadius: 22,
+  smokePerFrame: 1.2,
+  smokeLifeMin: 90,
+  smokeLifeMax: 180,
+  smokeRadiusMin: 2,
+  smokeRadiusMax: 14,
+  smokeRiseSpeed: 0.55,
+  smokeDrift: 0.25,
+  smokeWind: 0.08,
+  smokeTurbFreq: 0.007,
+  smokeTurbAmp: 0.45,
+  smokeStartAlpha: 0.3,
+  smokeColor: [175, 168, 152],
+  tiltFactor: 0.002,
+  tiltDamping: 0.88,
+  tiltReturn: 0.05,
+  tiltMax: 0.4,
+  swayFactor: 0.004,
+  swayDamping: 0.90,
+  swayReturn: 0.04,
+  swayMax: 0.08,
+  bowAmplitude: 60,
+  bowsNeeded: 3,
+  bowTimeoutMs: 2200,
+  bowCooldownMs: 1100,
+  triggerMessages: [
+        '南無加速菩薩', '施主，快點', '阿彌陀佛，速速完工', 
+        '善哉善哉，再快一些', '佛曰：不可怠惰',
+  ],
+  floatTextRise: 1.1,
+  floatTextLife: 95,
+  dropGravity: 0.45,
+  bgAlpha: 0.012,
+};
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const meritValEl = document.getElementById('merit-val');
+let W, H;
+function resize() { W = canvas.width = window.innerWidth; H = canvas.height = window.innerHeight; }
+resize();
+window.addEventListener('resize', resize);
+setInterval(resize, 1000);
+
+let mouseX = -1000, mouseY = -1000;
+let prevMouseX = mouseX, prevMouseY = mouseY;
+let active = true; 
+let dropping = false;
+let dropVelY = 0, dropPosY = 0, dropRot = 0, dropRotVel = 0;
+let tilt = 0, tiltVel = 0;
+let sway = 0, swayVel = 0;
+let merit = 0;
+let smokeParticles = [];
+let floatingTexts = [];
+let frame = 0;
+let bowDirections = [], bowLastDir = null, bowStartTime = 0, bowCooldownUntil = 0;
+let bowAccumY = 0;
+
+const AudioCtx = window.AudioContext || window.webkitAudioContext;
+let audioCtx = null;
+function ensureAudio() { if (!audioCtx) audioCtx = new AudioCtx(); }
+
+function playWoodenFish() {
+  ensureAudio();
+  const now = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(180, now);
+  osc.frequency.exponentialRampToValueAtTime(80, now + 0.15);
+  gain.gain.setValueAtTime(0.45, now);
+  gain.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
+  osc.connect(gain); gain.connect(audioCtx.destination);
+  osc.start(now); osc.stop(now + 0.4);
+}
+
+tauriListen('spawn-incense', (event) => {
+  const p = event.payload;
+  if (p && typeof p.x === 'number') {
+    mouseX = p.x; mouseY = p.y;
+    prevMouseX = mouseX; prevMouseY = mouseY;
+  }
+  active = true; dropping = false;
+  tilt = 0; tiltVel = 0; sway = 0; swayVel = 0;
+  bowDirections = []; bowLastDir = null; bowAccumY = 0;
+});
+
+tauriListen('drop-incense', () => {
+  if (active && !dropping) dropping = true;
+  dropVelY = 2; dropPosY = 0;
+  dropRot = sway; dropRotVel = (Math.random() - 0.5) * 0.04;
+});
+
+document.addEventListener('mousemove', e => { mouseX = e.clientX; mouseY = e.clientY; });
+document.addEventListener('mousedown', () => {
+  if (active && !dropping) {
+    dropping = true; dropVelY = 2; dropPosY = 0;
+    dropRot = sway; dropRotVel = (Math.random() - 0.5) * 0.04;
+  }
+});
+
+function detectBow() {
+  if (dropping || !active) return;
+  const now = Date.now();
+  if (now < bowCooldownUntil) return;
+
+  const dy = mouseY - prevMouseY;
+  if (dy === 0) return;
+
+  if (Math.sign(dy) === Math.sign(bowAccumY) || bowAccumY === 0) {
+    bowAccumY += dy;
+  } else {
+    bowAccumY = dy;
+  }
+
+  if (Math.abs(bowAccumY) > C.bowAmplitude) {
+    const dir = bowAccumY > 0 ? 'down' : 'up';
+    if (dir !== bowLastDir) {
+      if (bowDirections.length === 0) bowStartTime = now;
+      bowDirections.push(dir);
+      bowLastDir = dir;
+      bowAccumY = 0;
+      if (bowDirections.length >= C.bowsNeeded) {
+        triggerBow();
+        bowDirections = []; bowLastDir = null;
+        bowCooldownUntil = now + C.bowCooldownMs;
+      }
+    }
+  }
+
+  if (bowDirections.length > 0 && now - bowStartTime > C.bowTimeoutMs) {
+    bowDirections = []; bowLastDir = null; bowAccumY = 0;
+  }
+}
+
+function triggerBow() {
+  merit++; meritValEl.textContent = merit;
+  playWoodenFish();
+  tauriInvoke('whip_crack');
+  const msg = C.triggerMessages[Math.floor(Math.random() * C.triggerMessages.length)];
+  floatingTexts.push({
+    x: mouseX + (Math.random() - 0.5) * 80, y: mouseY - C.stickLength - 50,
+    text: msg, life: C.floatTextLife, maxLife: C.floatTextLife,
+  });
+}
+
+function spawnSmoke(x, y) {
+  const n = Math.floor(C.smokePerFrame) + (Math.random() < (C.smokePerFrame % 1) ? 1 : 0);
+  for (let i = 0; i < n; i++) {
+    const life = C.smokeLifeMin + Math.random() * (C.smokeLifeMax - C.smokeLifeMin);
+    smokeParticles.push({
+      x: x + (Math.random() - 0.5) * 4, y: y + (Math.random() - 0.5) * 2,
+      vx: (Math.random() - 0.5) * C.smokeDrift + C.smokeWind,
+      vy: -C.smokeRiseSpeed * (0.7 + Math.random() * 0.6),
+      radius: C.smokeRadiusMin + Math.random() * (C.smokeRadiusMax - C.smokeRadiusMin),
+      life, maxLife: life,
+      alpha: C.smokeStartAlpha * (0.7 + Math.random() * 0.3),
+      phase: Math.random() * Math.PI * 2,
+    });
+  }
+}
+
+function updateSmoke() {
+  for (let i = smokeParticles.length - 1; i >= 0; i--) {
+    const p = smokeParticles[i];
+    if (--p.life <= 0) { smokeParticles.splice(i, 1); continue; }
+    p.vx += Math.sin(p.y * C.smokeTurbFreq + p.phase + frame * 0.02) * C.smokeTurbAmp * 0.01;
+    p.x += p.vx; p.y += p.vy; p.vy *= 0.998; p.radius += 0.04;
+  }
+}
+
+function drawSmoke() {
+  const [r, g, b] = C.smokeColor;
+  for (const p of smokeParticles) {
+    const t = 1 - p.life / p.maxLife;
+    const a = p.alpha * (1 - t * t);
+    if (a < 0.005) continue;
+    const rad = p.radius * (1 + t * 0.8);
+    const gr = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, rad);
+    gr.addColorStop(0, `rgba(${r},${g},${b},${a})`);
+    gr.addColorStop(1, `rgba(${r},${g},${b},0)`);
+    ctx.fillStyle = gr;
+    ctx.beginPath(); ctx.arc(p.x, p.y, rad, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+function updateFloatingTexts() {
+  for (let i = floatingTexts.length - 1; i >= 0; i--) {
+    floatingTexts[i].y -= C.floatTextRise;
+    if (--floatingTexts[i].life <= 0) floatingTexts.splice(i, 1);
+  }
+}
+
+function drawFloatingTexts() {
+  for (const ft of floatingTexts) {
+    const t = ft.life / ft.maxLife;
+    const a = t < 0.3 ? t / 0.3 : (t > 0.7 ? (1 - t) / 0.3 : 1);
+    ctx.save();
+    ctx.font = `${ft.small ? 20 : 32}px 'Ma Shan Zheng', cursive`;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = `rgba(245, 217, 154, ${a * 0.9})`;
+    ctx.shadowColor = 'rgba(255, 160, 40, 0.4)';
+    ctx.shadowBlur = 16;
+    ctx.fillText(ft.text, ft.x, ft.y);
+    ctx.restore();
+  }
+}
+
+function drawIncense(baseX, baseY, tiltAmount, swayAngle) {
+  const angle = tiltAmount * (Math.PI * 0.4);
+  const cosA = Math.cos(angle);
+  const sinA = Math.sin(angle);
+  const apparentLen = C.stickLength * cosA;
+  const tipOffsetY = C.stickLength * sinA * 0.3;
+  const spacingScale = 0.6 + 0.4 * cosA;
+  const widthScale = 1 + Math.abs(tiltAmount) * 0.3;
+
+  ctx.save();
+  ctx.translate(baseX, baseY);
+  ctx.rotate(swayAngle);
+
+  for (let i = 0; i < C.stickCount; i++) {
+    const ox = (i - 1) * C.stickSpacing * spacingScale;
+    const splay = (i - 1) * 0.018 * spacingScale;
+    ctx.save();
+    ctx.translate(ox, 0);
+    ctx.rotate(splay);
+    const sw = C.stickWidth * (widthScale - Math.abs(splay) * 2);
+    const tipY = -apparentLen + tipOffsetY;
+    const grad = ctx.createLinearGradient(0, 30, 0, tipY);
+    grad.addColorStop(0, C.stickWoodColor);
+    grad.addColorStop(0.13, C.stickColor);
+    grad.addColorStop(0.94, C.stickBurnColor);
+    grad.addColorStop(1.0, C.stickAshColor);
+    ctx.strokeStyle = grad; ctx.lineWidth = sw; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(0, 30); ctx.lineTo(0, tipY); ctx.stroke();
+    const fl = 0.8 + 0.2 * Math.sin(frame * 0.15 + i * 2.3);
+    const eGlow = C.emberGlowRadius * fl * cosA;
+    const eRad = C.emberRadius * fl * (0.8 + 0.2 * cosA);
+    const glow = ctx.createRadialGradient(0, tipY, 0, 0, tipY, eGlow);
+    glow.addColorStop(0, `rgba(255,120,40,${0.3 * fl})`);
+    glow.addColorStop(1, 'rgba(255,60,10,0)');
+    ctx.fillStyle = glow; ctx.beginPath(); ctx.arc(0, tipY, eGlow, 0, Math.PI * 2); ctx.fill();
+    const em = ctx.createRadialGradient(0, tipY, 0, 0, tipY, eRad);
+    em.addColorStop(0, '#ffd080'); em.addColorStop(1, 'rgba(200,60,10,0.3)');
+    ctx.fillStyle = em; ctx.beginPath(); ctx.arc(0, tipY, eRad, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+    if (active || dropping) {
+      const localX = ox, localY = tipY;
+      const worldTipX = baseX + localX * Math.cos(swayAngle) - localY * Math.sin(swayAngle);
+      const worldTipY = baseY + localX * Math.sin(swayAngle) + localY * Math.cos(swayAngle);
+      spawnSmoke(worldTipX, worldTipY);
+    }
+  }
+  ctx.restore();
+}
+
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+function update() {
+  const mouseVelX = mouseX - prevMouseX;
+  const mouseVelY = mouseY - prevMouseY;
+  if (active && !dropping) {
+    tiltVel += mouseVelY * C.tiltFactor;
+    tiltVel *= C.tiltDamping;
+    tiltVel -= tilt * C.tiltReturn;
+    tilt += tiltVel;
+    tilt = clamp(tilt, -C.tiltMax, C.tiltMax);
+    swayVel += mouseVelX * C.swayFactor;
+    swayVel *= C.swayDamping;
+    swayVel -= sway * C.swayReturn;
+    sway += swayVel;
+    sway = clamp(sway, -C.swayMax, C.swayMax);
+    detectBow();
+  }
+  if (dropping) {
+    dropVelY += C.dropGravity;
+    dropPosY += dropVelY;
+    dropRotVel += (Math.random() - 0.5) * 0.003;
+    dropRot += dropRotVel;
+    if (mouseY + dropPosY > H + 300) { active = false; dropping = false; tauriHideWindow(); }
+  }
+  updateSmoke();
+  updateFloatingTexts();
+  prevMouseX = mouseX; prevMouseY = mouseY;
+  frame++;
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = `rgba(0,0,0,${C.bgAlpha})`;
+  ctx.fillRect(0, 0, W, H);
+  drawSmoke();
+  if (active) {
+    if (dropping) {
+      ctx.save(); ctx.translate(mouseX, mouseY + dropPosY); ctx.rotate(dropRot);
+      ctx.translate(-mouseX, -(mouseY + dropPosY));
+      drawIncense(mouseX, mouseY + dropPosY, 0, 0); ctx.restore();
+    } else {
+      drawIncense(mouseX, mouseY, tilt, sway);
+    }
+  }
+  drawFloatingTexts();
+}
+
+function loop() { update(); draw(); requestAnimationFrame(loop); }
+loop();
+</script>
+</body>
+</html>
