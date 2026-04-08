@@ -14,39 +14,64 @@
 - 🪔 多螢幕感知，overlay 永遠開在游標所在的螢幕
 - 🪔 點擊 overlay 任意處即可隱藏
 
+## 取得方式
+
+> **預編譯的 `.dmg` / `.msi` 發佈還在建置中**，目前請從原始碼自行 build。
+
+本專案前端只有一份純靜態 `ui/index.html`，**完全不使用 npm / Node.js 生態系**。這是刻意的選擇——最近 npm 頻繁爆出供應鏈投毒事件（惡意套件、被劫持的 transitive dependency 等），一個幾百行的小玩具沒有理由去背負幾千個 npm 依賴的風險。整個工具鏈只需要 Rust + Tauri CLI。
+
 ## 前置需求
 
-- [Rust](https://rustup.rs/) (1.70+)
-- [Tauri CLI v2](https://v2.tauri.app/start/prerequisites/)
+### 1. Rust（透過 rustup 安裝）
 
+macOS / Linux：
 ```bash
-cargo install tauri-cli --version "^2"
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-macOS 額外需要：在「系統設定 → 隱私權與安全性 → 輔助使用」中允許本 app（用於鍵盤模擬）。觸發時會短暫使用系統剪貼簿（pbcopy → Cmd+V）。
+Windows：到 <https://rustup.rs/> 下載 `rustup-init.exe` 執行。
 
-如果從 GitHub Releases 下載 `.dmg` 安裝後開啟顯示「已損毀，無法打開」，這是未 notarize 的 app 被 Gatekeeper 擋下的誤導訊息，執行一次下面的指令拿掉 quarantine 屬性即可：
+安裝完成後重新開一個終端機，確認 `cargo --version` 可以執行（Rust 1.70 以上皆可）。
+
+### 2. Tauri CLI v2
 
 ```bash
-xattr -cr /Applications/乖乖Claude.app
+cargo install tauri-cli --version "^2" --locked
 ```
 
-## 開發
+### 3. 平台額外需求
+
+- **macOS**：Xcode Command Line Tools（`xcode-select --install`）
+- **Windows**：Visual Studio Build Tools 或完整 VS（C++ build tools）
+- 其他系統依賴可參考 [Tauri 官方 prerequisites](https://v2.tauri.app/start/prerequisites/)
+
+## 開發模式（即時熱重載）
 
 ```bash
 cd guaiguai-claude
 cargo tauri dev
 ```
 
-## 打包
+## 打包成安裝檔
 
 ```bash
+cd guaiguai-claude
 cargo tauri build
 ```
 
-產出：
-- macOS: `src-tauri/target/release/bundle/dmg/`
-- Windows: `src-tauri/target/release/bundle/msi/`
+產出路徑：
+- macOS: `src-tauri/target/release/bundle/dmg/*.dmg`（也可以直接跑 `src-tauri/target/release/bundle/macos/*.app`）
+- Windows: `src-tauri/target/release/bundle/msi/*.msi`、`src-tauri/target/release/bundle/nsis/*.exe`
+
+## 執行時的作業系統權限
+
+**macOS** 需要在「系統設定 → 隱私權與安全性 → 輔助使用」中允許本 app，鍵盤模擬才會生效。觸發催促時會短暫使用系統剪貼簿（pbcopy → Cmd+V）。
+
+未來若從 GitHub Releases 下載 `.dmg` 安裝後開啟顯示「已損毀，無法打開」，這是未 notarize 的 app 被 Gatekeeper 擋下的誤導訊息，執行一次下面的指令拿掉 quarantine 屬性即可：
+
+```bash
+xattr -cr /Applications/乖乖Claude.app
+```
 
 ## 專案結構
 
