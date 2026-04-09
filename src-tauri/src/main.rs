@@ -58,6 +58,33 @@ fn trigger_action(mode: String, app: tauri::AppHandle) {
     });
 }
 
+/// Decode a PNG byte slice into an owned `Image` with RGBA8 pixels.
+/// Returns `None` if decoding fails or the PNG isn't in a supported format.
+fn decode_png_to_image(bytes: &[u8]) -> Option<Image<'static>> {
+    let decoder = png::Decoder::new(bytes);
+    let mut reader = decoder.read_info().ok()?;
+    let mut buf = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buf).ok()?;
+    buf.truncate(info.buffer_size());
+
+    // Ensure we end up with RGBA8. The app's 32x32.png is already RGBA, but
+    // handle the common cases defensively.
+    let rgba = match info.color_type {
+        png::ColorType::Rgba => buf,
+        png::ColorType::Rgb => {
+            let mut out = Vec::with_capacity(buf.len() / 3 * 4);
+            for chunk in buf.chunks_exact(3) {
+                out.extend_from_slice(chunk);
+                out.push(255);
+            }
+            out
+        }
+        _ => return None,
+    };
+
+    Some(Image::new_owned(rgba, info.width, info.height))
+}
+
 /// Show the overlay on whichever monitor the cursor is on, and emit
 /// `spawn-incense` so the JS side resets its state.
 fn show_overlay_at_cursor(app: &AppHandle) {
@@ -116,9 +143,11 @@ fn main() {
             let quit = MenuItem::with_id(app, "quit", "結束", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&incense_item, &slapper_item, &sep, &quit])?;
 
-            let default_icon = app
-                .default_window_icon()
-                .cloned()
+            // Load a small, tray-sized icon. `default_window_icon()` returns
+            // the large app icon, which at tray size looks like a solid block
+            // (especially with `icon_as_template` on macOS). Decode the 32x32
+            // PNG at runtime from bytes embedded in the binary.
+            let tray_icon = decode_png_to_image(include_bytes!("../icons/32x32.png"))
                 .unwrap_or_else(|| Image::new_owned(vec![0, 0, 0, 0], 1, 1));
 
             // Show the overlay once on startup.
@@ -147,7 +176,8 @@ fn main() {
             let slapper_for_menu = slapper_item.clone();
 
             let _tray = TrayIconBuilder::new()
-                .icon(default_icon)
+                .icon(tray_icon)
+                .icon_as_template(true)
                 .tooltip("乖乖Claude")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
