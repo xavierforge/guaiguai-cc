@@ -1,7 +1,10 @@
 //! Platform-specific macro sender: paste a message into the focused app,
 //! then press Enter.
 //!
-//! - macOS: put the text on the clipboard via `pbcopy`, then Cmd+V via AppleScript.
+//! - macOS: put the text on the clipboard via AppleScript's `set the clipboard`,
+//!   then Cmd+V via AppleScript. Going through AppleScript for both steps avoids
+//!   relying on an external `pbcopy` subprocess, which was silently failing when
+//!   the app was launched from `/Applications` instead of `cargo tauri dev`.
 //! - Windows: type each char as Unicode via `SendInput`.
 //!
 //! Going through the clipboard / Unicode paths avoids the IME and modifier
@@ -9,39 +12,37 @@
 
 #[cfg(target_os = "macos")]
 pub fn send_macro(text: &str) -> Result<(), String> {
-    use std::io::Write;
+    // Escape the phrase so it survives embedding in an AppleScript string literal.
+    // Only backslash and double-quote need escaping inside an AS "…" literal;
+    // phrases do not contain newlines.
+    let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
 
-    // 1. Put text on the clipboard via pbcopy
-    let mut child = std::process::Command::new("pbcopy")
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("pbcopy spawn failed: {e}"))?;
-    if let Some(stdin) = child.stdin.as_mut() {
-        stdin
-            .write_all(text.as_bytes())
-            .map_err(|e| format!("pbcopy write failed: {e}"))?;
-    }
-    child
-        .wait()
-        .map_err(|e| format!("pbcopy wait failed: {e}"))?;
-
-    // 2. Cmd+V to paste, then Return (give the paste time to actually land).
-    //
-    // Use `key code 9` (the V key) instead of `keystroke "v"`. The `keystroke`
-    // form goes through character-to-key translation and occasionally emits
-    // the V with the wrong modifier (showing up as Option+V / ^[v in terminals).
-    // `key code` sends the raw virtual-key event so the Command modifier sticks.
-    let script = r#"tell application "System Events"
-  key code 9 using {command down}
+    // One osascript call does all three steps:
+    //   1. set the clipboard to the phrase
+    //   2. Cmd+V via `key code 9 using {command down}` (raw virtual-key so
+    //      the Command modifier is not lost to the char translation path that
+    //      `keystroke "v"` takes)
+    //   3. Return
+    let script = format!(
+        r#"set the clipboard to "{escaped}"
+tell application "System Events"
+  key code 9 using {{command down}}
   delay 0.2
   key code 36
   delay 0.05
-end tell"#;
-    std::process::Command::new("osascript")
+end tell"#
+    );
+    let output = std::process::Command::new("/usr/bin/osascript")
         .arg("-e")
-        .arg(script)
+        .arg(&script)
         .output()
-        .map_err(|e| format!("osascript failed: {e}"))?;
+        .map_err(|e| format!("osascript spawn failed: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "osascript failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
     Ok(())
 }
 
