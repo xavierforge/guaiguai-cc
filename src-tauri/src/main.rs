@@ -177,7 +177,6 @@ fn main() {
 
             let _tray = TrayIconBuilder::new()
                 .icon(tray_icon)
-                .icon_as_template(true)
                 .tooltip("乖乖Claude")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
