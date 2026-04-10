@@ -1224,7 +1224,7 @@ dependencies = [
 
 [[package]]
 name = "guaiguai-cc"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "png",
  "rand 0.8.5",
