@@ -177,7 +177,7 @@ fn main() {
 
             let _tray = TrayIconBuilder::new()
                 .icon(tray_icon)
-                .tooltip("乖乖Claude")
+                .tooltip("乖乖CC")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(move |app, event| {

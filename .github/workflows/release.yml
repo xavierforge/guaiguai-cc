@@ -77,7 +77,7 @@ jobs:
         # both the project crate and the bundle directory.
         shell: bash
         run: |
-          cargo clean -p guaiguai-claude
+          cargo clean -p guaiguai-cc
           rm -rf "target/${{ matrix.target }}/release/bundle"
         working-directory: src-tauri
 
@@ -115,9 +115,9 @@ jobs:
           fi
 
           if [ "${{ matrix.label }}" = "macOS-ARM" ]; then
-            OUT="dist/guaiguai-claude-macOS-ARM.dmg"
+            OUT="dist/guaiguai-cc-macOS-ARM.dmg"
           else
-            OUT="dist/guaiguai-claude-macOS-Intel.dmg"
+            OUT="dist/guaiguai-cc-macOS-Intel.dmg"
           fi
           cp "$DMG" "$OUT"
           echo "Produced: $OUT"
@@ -148,18 +148,18 @@ jobs:
           fi
 
           if [ -n "$MSI" ]; then
-            cp "$MSI" "dist/guaiguai-claude-Windows-x64.msi"
-            echo "Produced: dist/guaiguai-claude-Windows-x64.msi"
+            cp "$MSI" "dist/guaiguai-cc-Windows-x64.msi"
+            echo "Produced: dist/guaiguai-cc-Windows-x64.msi"
           fi
           if [ -n "$EXE" ]; then
-            cp "$EXE" "dist/guaiguai-claude-Windows-x64-setup.exe"
-            echo "Produced: dist/guaiguai-claude-Windows-x64-setup.exe"
+            cp "$EXE" "dist/guaiguai-cc-Windows-x64-setup.exe"
+            echo "Produced: dist/guaiguai-cc-Windows-x64-setup.exe"
           fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: guaiguai-claude-${{ matrix.label }}
+          name: guaiguai-cc-${{ matrix.label }}
           path: dist/*
           if-no-files-found: error
           retention-days: 7
@@ -186,7 +186,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: 乖乖Claude ${{ github.ref_name }}
+          name: 乖乖CC ${{ github.ref_name }}
           files: release-files/*
           body: |
             ## 下載
@@ -201,12 +201,12 @@ jobs:
 
             本專案未加入 Apple Developer Program，因此 `.app` 沒有經過 notarization。首次開啟時 macOS 可能會顯示：
 
-            > 「乖乖Claude」已損毀，無法打開。你應該將其丟到「垃圾桶」。
+            > 「乖乖CC」已損毀，無法打開。你應該將其丟到「垃圾桶」。
 
             這**不是真的損毀**，而是 Gatekeeper 對未 notarize + 下載時附加的隔離屬性（quarantine）的誤導訊息。解法是在終端機執行一次這個指令把隔離屬性拿掉：
 
             ```bash
-            xattr -cr /Applications/GuaiguaiClaude.app
+            xattr -cr /Applications/GuaiguaiCC.app
             ```
 
             之後就可以正常開啟。

@@ -1,4 +1,4 @@
-# 乖乖Claude 🪔
+# 乖乖CC 🪔
 
 > 用三炷香拜拜、或用愛的小手疼愛，催 Claude Code 加速。觸發後會自動貼上 `/btw ...` 催促語到 Claude Code 上。
 
@@ -16,20 +16,20 @@
 
 ## 下載
 
-到 [Releases 頁面](https://github.com/xavierforge/guaiguai-claude/releases) 抓對應平台的檔案:
+到 [Releases 頁面](https://github.com/xavierforge/guaiguai-cc/releases) 抓對應平台的檔案:
 
 | 平台 | 檔案 |
 |------|------|
-| macOS (Apple Silicon) | `guaiguai-claude-macOS-ARM.dmg` |
-| macOS (Intel) | `guaiguai-claude-macOS-Intel.dmg` |
-| Windows | `guaiguai-claude-Windows-x64.msi`(或 `...-setup.exe`) |
+| macOS (Apple Silicon) | `guaiguai-cc-macOS-ARM.dmg` |
+| macOS (Intel) | `guaiguai-cc-macOS-Intel.dmg` |
+| Windows | `guaiguai-cc-Windows-x64.msi`(或 `...-setup.exe`) |
 
 ### macOS 首次開啟
 
-本專案沒加入 Apple Developer Program,`.app` 沒有 notarize。首次打開時 Gatekeeper 會跳「『GuaiguaiClaude』已損毀，無法打開」，這不是真的壞掉,而是 Gatekeeper 對未 notarize + 下載附加 quarantine 屬性的誤導訊息。在終端機執行一次:
+本專案沒加入 Apple Developer Program,`.app` 沒有 notarize。首次打開時 Gatekeeper 會跳「『GuaiguaiCC』已損毀，無法打開」，這不是真的壞掉,而是 Gatekeeper 對未 notarize + 下載附加 quarantine 屬性的誤導訊息。在終端機執行一次:
 
 ```bash
-xattr -cr /Applications/GuaiguaiClaude.app
+xattr -cr /Applications/GuaiguaiCC.app
 ```
 
 之後就能正常開啟。
@@ -56,14 +56,14 @@ xattr -cr /Applications/GuaiguaiClaude.app
 ### 開發模式(即時熱重載)
 
 ```bash
-cd guaiguai-claude
+cd guaiguai-cc
 cargo tauri dev
 ```
 
 ### 打包成安裝檔
 
 ```bash
-cd guaiguai-claude
+cd guaiguai-cc
 cargo tauri build
 ```
 
@@ -74,7 +74,7 @@ cargo tauri build
 ## 專案結構
 
 ```
-guaiguai-claude/
+guaiguai-cc/
 ├── ui/
 │   └── index.html           # 兩個模式的 canvas、動畫、觸發偵測、音效
 ├── src-tauri/
