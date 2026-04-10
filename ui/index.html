@@ -106,7 +106,7 @@ const C = {
   stickWoodColor: '#d4a06a',
   emberRadius: 4.5,
   emberGlowRadius: 22,
-  smokePerFrame: 1.2,
+  smokePerFrame: 0.1,
   smokeLifeMin: 90,
   smokeLifeMax: 180,
   smokeRadiusMin: 2,
@@ -121,11 +121,11 @@ const C = {
   tiltFactor: 0.002,
   tiltDamping: 0.88,
   tiltReturn: 0.05,
-  tiltMax: 0.4,
+  tiltMax: 0.65,
   swayFactor: 0.004,
   swayDamping: 0.90,
   swayReturn: 0.04,
-  swayMax: 0.08,
+  swayMax: 0.1,
   bowAmplitude: 60,
   bowsNeeded: 3,
   bowTimeoutMs: 2200,
@@ -134,7 +134,7 @@ const C = {
     '南無加速菩薩', '施主，快點', '阿彌陀佛，速速完工',
     '善哉善哉，再快一些', '佛曰：不可怠惰',
   ],
-  floatTextRise: 1.1,
+  floatTextRise: 0.7,
   floatTextLife: 95,
   dropGravity: 0.45,
   bgAlpha: 0.012,
@@ -147,20 +147,26 @@ const C = {
   slapStickColors: ['#e63946', '#457b9d', '#f4a261', '#2a9d8f'],
   slapGripColor: '#222',
   slapGripRidgeColor: '#444',
-  slapHandWidth: 55,
-  slapHandHeight: 65,
+  slapHandWidth: 70,
+  slapHandHeight: 80,
   slapHandColor: '#1a1a1a',
   slapHandOutline: '#333',
-  swaySlapFactor: 0.006,
-  swaySlapDamping: 0.88,
-  swaySlapReturn: 0.03,
+  swaySlapFactor: 0.004,
+  swaySlapDamping: 0.67,
+  swaySlapReturn: 0.035,
   swaySlapMax: 0.7,
+  // Joint (second segment)
+  jointRatio: 0.2,
+  jointFactor: 0.3,
+  jointDamping: 0.51,
+  jointReturn: 0.04,
+  jointMax: 0.2,
   slapAngVelThreshold: 0.22,
-  slapCooldownMs: 1300,
+  slapCooldownMs: 900,
   slapTriggerChance: 0.28,
   incenseTriggerChance: 0.60,
   shakeIntensity: 14,
-  shakeDuration: 8,
+  shakeDuration: 10,
   slapMessages: [
     '你看看你！', '隔壁Codex都寫完了！', '隔壁Gemini都寫完了！',
     '啪！', '不打不成器！', '我數到三！', '講幾次了！',
@@ -169,7 +175,7 @@ const C = {
     '再不快點就別吃飯了！',
   ],
   slapFloatTextLife: 60,
-  slapFloatTextRise: 1.8,
+  slapFloatTextRise: 1.2,
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -484,6 +490,8 @@ const slapper = {
   count: 0,
   swayAngle: 0,
   swayVel: 0,
+  jointAngle: 0,
+  jointVel: 0,
   lastSlapTime: 0,
   particles: [],
   floatingTexts: [],
@@ -495,6 +503,8 @@ const slapper = {
 function slapperReset() {
   slapper.swayAngle = 0;
   slapper.swayVel = 0;
+  slapper.jointAngle = 0;
+  slapper.jointVel = 0;
   slapper.particles = [];
   slapper.floatingTexts = [];
   slapper.trailAngles = [];
@@ -623,11 +633,44 @@ function drawSlapperFloatingTexts() {
   }
 }
 
-function drawSlapStick(originX, originY, angle, alpha) {
+function drawStickSegments(startY, endY, totalSegs) {
+  const len = startY - endY;
+  const segHeight = len / totalSegs;
+  for (let i = 0; i < totalSegs; i++) {
+    const sy = startY - i * segHeight;
+    const color = C.slapStickColors[i % C.slapStickColors.length];
+    const nextColor = C.slapStickColors[(i + 1) % C.slapStickColors.length];
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(-C.slapStickWidth / 2, sy - segHeight, C.slapStickWidth, segHeight);
+    ctx.clip();
+    ctx.fillStyle = color;
+    ctx.fillRect(-C.slapStickWidth / 2, sy - segHeight, C.slapStickWidth, segHeight);
+    ctx.fillStyle = nextColor;
+    ctx.beginPath();
+    ctx.moveTo(-C.slapStickWidth / 2, sy);
+    ctx.lineTo(C.slapStickWidth / 2, sy - segHeight * 0.6);
+    ctx.lineTo(C.slapStickWidth / 2, sy - segHeight);
+    ctx.lineTo(-C.slapStickWidth / 2, sy - segHeight * 0.4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+  ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(-C.slapStickWidth / 2, endY, C.slapStickWidth, len);
+}
+
+function drawSlapStick(originX, originY, baseAngle, jointAngle, alpha) {
+  const lowerStickLen = C.slapStickLength * C.jointRatio;
+  const upperStickLen = C.slapStickLength * (1 - C.jointRatio);
+  const lowerSegs = Math.max(1, Math.round(20 * C.jointRatio));
+  const upperSegs = Math.max(1, 20 - lowerSegs);
+
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.translate(originX, originY);
-  ctx.rotate(angle);
+  ctx.rotate(baseAngle);
 
   // Grip
   ctx.fillStyle = C.slapGripColor;
@@ -644,86 +687,86 @@ function drawSlapStick(originX, originY, angle, alpha) {
     ctx.stroke();
   }
 
-  // Colorful wrapped stick
-  const stickTop = -C.slapStickLength;
-  const segHeight = C.slapStickLength / 20;
+  // Lower stick segment (grip to joint)
+  drawStickSegments(0, -lowerStickLen, lowerSegs);
 
-  for (let i = 0; i < 20; i++) {
-    const sy = -i * segHeight;
-    const color = C.slapStickColors[i % C.slapStickColors.length];
-    const nextColor = C.slapStickColors[(i + 1) % C.slapStickColors.length];
+  // Joint pivot — move to joint position, rotate by jointAngle
+  ctx.translate(0, -lowerStickLen);
+  ctx.rotate(jointAngle);
 
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(-C.slapStickWidth / 2, sy - segHeight, C.slapStickWidth, segHeight);
-    ctx.clip();
+  // Upper stick segment (joint to top)
+  drawStickSegments(0, -upperStickLen, upperSegs);
 
-    ctx.fillStyle = color;
-    ctx.fillRect(-C.slapStickWidth / 2, sy - segHeight, C.slapStickWidth, segHeight);
-
-    ctx.fillStyle = nextColor;
-    ctx.beginPath();
-    ctx.moveTo(-C.slapStickWidth / 2, sy);
-    ctx.lineTo(C.slapStickWidth / 2, sy - segHeight * 0.6);
-    ctx.lineTo(C.slapStickWidth / 2, sy - segHeight);
-    ctx.lineTo(-C.slapStickWidth / 2, sy - segHeight * 0.4);
-    ctx.closePath();
-    ctx.fill();
-    ctx.restore();
-  }
-
-  ctx.strokeStyle = 'rgba(0,0,0,0.3)';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(-C.slapStickWidth / 2, stickTop, C.slapStickWidth, C.slapStickLength);
-
-  // Hand (palm)
-  const handCenterY = stickTop - C.slapHandHeight * 0.35;
+  // 愛的小手 — hand-shaped leather paddle (traced from reference)
   ctx.save();
-  ctx.translate(0, handCenterY);
+  ctx.translate(0, -upperStickLen);
+  ctx.rotate(-0.26); // ~15° CCW to correct reference tilt
 
-  const hw = C.slapHandWidth / 2;
-  const hh = C.slapHandHeight / 2;
+  const s = C.slapHandHeight / 65;
+  const p = (x, y) => [x * s, y * s];
+
+  function handPath() {
+    ctx.moveTo(...p(-5, 0));
+    ctx.bezierCurveTo(...p(-8, -8), ...p(-11, -18), ...p(-11, -31));
+    ctx.bezierCurveTo(...p(-11, -40), ...p(-9, -49), ...p(-6, -55));
+    ctx.bezierCurveTo(...p(-4, -59), ...p(-2, -62), ...p(0, -63));
+    ctx.bezierCurveTo(...p(1, -63), ...p(3, -62), ...p(4, -61));
+    ctx.bezierCurveTo(...p(5, -61), ...p(7, -63), ...p(9, -63));
+    ctx.bezierCurveTo(...p(11, -63), ...p(13, -61), ...p(15, -60));
+    ctx.bezierCurveTo(...p(16, -60.5), ...p(18, -61), ...p(20, -61));
+    ctx.bezierCurveTo(...p(22, -60.5), ...p(24, -59), ...p(26, -56));
+    ctx.bezierCurveTo(...p(27, -54), ...p(28, -53.5), ...p(29.5, -53.5));
+    ctx.bezierCurveTo(...p(31, -53.5), ...p(33, -52), ...p(35, -48));
+    ctx.bezierCurveTo(...p(35.5, -44), ...p(35, -41), ...p(34, -38));
+    ctx.bezierCurveTo(...p(33, -35), ...p(31.5, -32.5), ...p(31, -31));
+    ctx.bezierCurveTo(...p(30.5, -29.5), ...p(33, -28), ...p(36, -25));
+    ctx.bezierCurveTo(...p(36, -20), ...p(33, -14), ...p(28, -9));
+    ctx.bezierCurveTo(...p(22, -5), ...p(14, -1), ...p(8, 1));
+    ctx.bezierCurveTo(...p(4, 2), ...p(-1, 1), ...p(-5, 0));
+  }
 
   ctx.fillStyle = C.slapHandColor;
   ctx.strokeStyle = C.slapHandOutline;
   ctx.lineWidth = 2;
   ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
 
   ctx.beginPath();
-  ctx.moveTo(-hw * 0.5, hh * 0.6);
-  ctx.quadraticCurveTo(-hw * 0.8, 0, -hw * 0.7, -hh * 0.3);
-  ctx.quadraticCurveTo(-hw * 1.1, -hh * 0.5, -hw * 1.0, -hh * 0.75);
-  ctx.quadraticCurveTo(-hw * 0.85, -hh * 0.9, -hw * 0.65, -hh * 0.55);
-  ctx.quadraticCurveTo(-hw * 0.55, -hh * 1.1, -hw * 0.4, -hh * 1.25);
-  ctx.quadraticCurveTo(-hw * 0.25, -hh * 1.3, -hw * 0.15, -hh * 1.1);
-  ctx.quadraticCurveTo(-hw * 0.05, -hh * 1.35, hw * 0.05, -hh * 1.25);
-  ctx.quadraticCurveTo(hw * 0.12, -hh * 1.1, hw * 0.15, -hh * 1.0);
-  ctx.quadraticCurveTo(hw * 0.25, -hh * 1.2, hw * 0.38, -hh * 1.1);
-  ctx.quadraticCurveTo(hw * 0.48, -hh * 0.95, hw * 0.45, -hh * 0.8);
-  ctx.quadraticCurveTo(hw * 0.58, -hh * 0.95, hw * 0.68, -hh * 0.82);
-  ctx.quadraticCurveTo(hw * 0.78, -hh * 0.7, hw * 0.7, -hh * 0.5);
-  ctx.quadraticCurveTo(hw * 0.8, 0, hw * 0.5, hh * 0.6);
+  handPath();
   ctx.closePath();
   ctx.fill();
   ctx.stroke();
 
-  ctx.strokeStyle = 'rgba(80,80,80,0.5)';
+  // Stitch: inner outline (scaled 0.92 from hand center)
+  ctx.strokeStyle = C.slapStitchColor || 'rgba(180,170,150,0.7)';
   ctx.lineWidth = 1.2;
+  ctx.setLineDash([3, 3.5]);
+
+  ctx.save();
+  const centerX = 12 * s, centerY = -31 * s;
+  ctx.translate(centerX, centerY);
+  ctx.scale(0.92, 0.92);
+  ctx.translate(-centerX, -centerY);
   ctx.beginPath();
-  ctx.moveTo(-hw * 0.3, -hh * 0.1);
-  ctx.quadraticCurveTo(0, -hh * 0.25, hw * 0.3, -hh * 0.1);
+  handPath();
+  ctx.closePath();
   ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(-hw * 0.25, hh * 0.15);
-  ctx.quadraticCurveTo(0, hh * 0.02, hw * 0.25, hh * 0.15);
-  ctx.stroke();
-  for (const fx of [-0.15, 0.12, 0.35]) {
+  ctx.restore();
+
+  // Stitch: finger seam lines (traced from reference)
+  const seams = [
+    [{ x: 2.5, y: -52 }, { x: 1.6, y: -48 }, { x: 0.6, y: -42 }, { x: -0.4, y: -38 }],
+    [{ x: 12, y: -51 }, { x: 11, y: -48 }, { x: 10, y: -45 }, { x: 9, y: -41 }, { x: 8, y: -36 }],
+    [{ x: 24, y: -49 }, { x: 22, y: -43 }, { x: 21, y: -39 }, { x: 19, y: -36 }, { x: 18, y: -34 }],
+  ];
+  for (const seam of seams) {
     ctx.beginPath();
-    ctx.moveTo(hw * fx, -hh * 0.65);
-    ctx.lineTo(hw * fx, -hh * 0.85);
+    ctx.moveTo(seam[0].x * s, seam[0].y * s);
+    for (let i = 1; i < seam.length; i++) ctx.lineTo(seam[i].x * s, seam[i].y * s);
     ctx.stroke();
   }
 
+  ctx.setLineDash([]);
   ctx.restore(); // hand
   ctx.restore(); // main
 }
@@ -731,13 +774,21 @@ function drawSlapStick(originX, originY, angle, alpha) {
 function updateSlapperMode() {
   const mouseVelX = mouseX - prevMouseX;
 
+  // Lower segment (base) physics
   slapper.swayVel += mouseVelX * C.swaySlapFactor;
   slapper.swayVel *= C.swaySlapDamping;
   slapper.swayVel -= slapper.swayAngle * C.swaySlapReturn;
   slapper.swayAngle += slapper.swayVel;
   slapper.swayAngle = clamp(slapper.swayAngle, -C.swaySlapMax, C.swaySlapMax);
 
-  slapper.trailAngles.unshift(slapper.swayAngle);
+  // Upper segment (joint) physics — driven by base angular velocity
+  slapper.jointVel += slapper.swayVel * C.jointFactor;
+  slapper.jointVel *= C.jointDamping;
+  slapper.jointVel -= slapper.jointAngle * C.jointReturn;
+  slapper.jointAngle += slapper.jointVel;
+  slapper.jointAngle = clamp(slapper.jointAngle, -C.jointMax, C.jointMax);
+
+  slapper.trailAngles.unshift({ base: slapper.swayAngle, joint: slapper.jointAngle });
   if (slapper.trailAngles.length > slapper.trailLength) slapper.trailAngles.pop();
 
   detectSlap();
@@ -762,10 +813,11 @@ function drawSlapperMode() {
   // Motion trail
   for (let i = slapper.trailAngles.length - 1; i >= 1; i--) {
     const alpha = 0.1 * (1 - i / slapper.trailLength);
-    drawSlapStick(mouseX, mouseY, slapper.trailAngles[i], alpha);
+    const t = slapper.trailAngles[i];
+    drawSlapStick(mouseX, mouseY, t.base, t.joint, alpha);
   }
 
-  drawSlapStick(mouseX, mouseY, slapper.swayAngle, 1.0);
+  drawSlapStick(mouseX, mouseY, slapper.swayAngle, slapper.jointAngle, 1.0);
 
   drawSlapperParticles();
   drawSlapperFloatingTexts();
