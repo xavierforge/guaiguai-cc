@@ -68,6 +68,15 @@ jobs:
             exit 1
           fi
 
+      - name: Clean stale app artifacts
+        # The cargo cache (via restore-keys fallback) may restore a target/
+        # directory from a previous version. Cargo's fingerprinting does not
+        # always detect changes to tauri.conf.json (read by build.rs), so
+        # clean just the project crate to force a rebuild while keeping all
+        # dependency artifacts cached.
+        run: cargo clean -p guaiguai-claude
+        working-directory: src-tauri
+
       - name: Build Tauri app
         run: cargo tauri build --target ${{ matrix.target }}
         working-directory: src-tauri
